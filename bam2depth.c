@@ -42,6 +42,8 @@ typedef struct {     // auxiliary data structure
     bam_hdr_t *hdr;  // the file header
     hts_itr_t *iter; // NULL if a region not specified
     int min_mapQ, min_len; // mapQ filter; length filter
+    int flag_include;
+    int flag_exclude;
 } aux_t;
 
 void *bed_read(const char *fn); // read a BED or position list file
@@ -57,7 +59,9 @@ static int read_bam(void *data, bam1_t *b) // read level filters better go here 
     {
         ret = aux->iter? sam_itr_next(aux->fp, aux->iter, b) : sam_read1(aux->fp, aux->hdr, b);
         if ( ret<0 ) break;
-        if ( b->core.flag & (BAM_FUNMAP | BAM_FSECONDARY | BAM_FQCFAIL | BAM_FDUP) ) continue;
+        if ( b->core.flag & (BAM_FUNMAP) ) continue;
+        if ( b->core.flag & aux->flag_exclude ) continue;
+        if ( (b->core.flag & aux->flag_include) != aux->flag_include ) continue;
         if ( (int)b->core.qual < aux->min_mapQ ) continue;
         if ( aux->min_len && bam_cigar2qlen(b->core.n_cigar, bam_get_cigar(b)) < aux->min_len ) continue;
         break;
@@ -70,6 +74,7 @@ int read_file_list(const char *file_list,int *n,char **argv[]);
 int main_depth(int argc, char *argv[])
 {
     int i, n, tid, beg, end, pos, *n_plp, baseQ = 0, mapQ = 0, min_len = 0, status = EXIT_SUCCESS, nfiles;
+    int flag_include = 0, flag_exclude = 1796; // (0x100 256 SECONDARY)+(0x200 512 QCFAIL)+(0x400 1024 DUP)=1796;
     const bam_pileup1_t **plp;
     char *reg = 0; // specified region
     void *bed = 0; // BED data structure
@@ -79,7 +84,7 @@ int main_depth(int argc, char *argv[])
     bam_mplp_t mplp;
 
     // parse the command line
-    while ((n = getopt(argc, argv, "r:b:q:Q:l:f:")) >= 0) {
+    while ((n = getopt(argc, argv, "r:b:q:Q:l:f:g:G:")) >= 0) {
         switch (n) {
             case 'l': min_len = atoi(optarg); break; // minimum query length
             case 'r': reg = strdup(optarg); break;   // parsing a region requires a BAM header
@@ -90,6 +95,8 @@ int main_depth(int argc, char *argv[])
             case 'q': baseQ = atoi(optarg); break;   // base quality threshold
             case 'Q': mapQ = atoi(optarg); break;    // mapping quality threshold
             case 'f': file_list = optarg; break;
+            case 'g': flag_include = strtol(optarg,0,0); break;  // flag to include reads in calculating depth
+            case 'G': flag_exclude = strtol(optarg,0,0); break;  // flag to exclude reads in calculating depth
         }
     }
     if (optind == argc && !file_list) {
@@ -102,6 +109,8 @@ int main_depth(int argc, char *argv[])
         fprintf(stderr, "   -q <int>            base quality threshold\n");
         fprintf(stderr, "   -Q <int>            mapping quality threshold\n");
         fprintf(stderr, "   -r <chr:from-to>    region\n");
+        fprintf(stderr, "   -g include flag     e.g. 0x10\n");
+        fprintf(stderr, "   -G exclude flag     e.g. 0x10\n");
         fprintf(stderr, "\n");
         return 1;
     }
@@ -137,6 +146,8 @@ int main_depth(int argc, char *argv[])
             return 1;
         }
         data[i]->min_mapQ = mapQ;                    // set the mapQ filter
+        data[i]->flag_include = flag_include;        // set the reads to include
+        data[i]->flag_exclude = flag_exclude;        // set the reads to exclude
         data[i]->min_len  = min_len;                 // set the qlen filter
         data[i]->hdr = sam_hdr_read(data[i]->fp);    // read the BAM header
         if (reg) { // if a region is specified
